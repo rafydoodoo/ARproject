@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Video Player - Hand Gesture Version</title>
+
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script src="https://unpkg.com/super-hands@4.0.2/dist/super-hands.min.js"></script>
+
+  <script>
+    AFRAME.registerComponent('draggable', {
+      init() {
+        this.dragging = false;
+        this.distance = 2;
+
+        this.el.addEventListener('pinchstarted', () => {
+          this.dragging = true;
+          const cam = new THREE.Vector3();
+          const obj = new THREE.Vector3();
+          this.el.sceneEl.camera.el.object3D.getWorldPosition(cam);
+          this.el.parentEl.object3D.getWorldPosition(obj);
+          this.distance = cam.distanceTo(obj);
+        });
+
+        this.el.addEventListener('pinchended', () => {
+          this.dragging = false;
+        });
+      },
+
+      tick() {
+        if (!this.dragging) return;
+
+        const camera = this.el.sceneEl.camera.el.object3D;
+        const direction = new THREE.Vector3(0, 0, -1);
+        direction.applyQuaternion(camera.quaternion);
+
+        const pos = new THREE.Vector3()
+          .copy(camera.position)
+          .addScaledVector(direction, this.distance);
+
+        this.el.parentEl.object3D.position.copy(pos);
+      }
+    });
+
+    AFRAME.registerComponent('resize-btn', {
+      schema: { factor: { default: 1.2 } },
+      init() {
+        this.el.addEventListener('pinchstarted', () => {
+          document.querySelector('#video-group').object3D.scale
+            .multiplyScalar(this.data.factor);
+        });
+      }
+    });
+  </script>
+</head>
+
+<body>
+
+<a-scene
+  webxr="requiredFeatures: local-floor, hand-tracking; optionalFeatures: bounded-floor"
+  background="color: transparent"
+  renderer="alpha: true; antialias: true">
+
+  <a-assets>
+    <video id="vid"
+           src="video.mp4"
+           loop
+           playsinline
+           webkit-playsinline
+           crossorigin="anonymous">
+    </video>
+  </a-assets>
+
+  <a-entity id="video-group" position="0 1.6 -2.5">
+
+    <a-plane width="1.58" height="1.58"
+             color="#111111"
+             position="0 0 -0.02">
+    </a-plane>
+
+    <a-plane id="screen"
+             width="1.5" height="1.5"
+             material="src: #vid; shader: flat"
+             draggable
+             class="interactive">
+    </a-plane>
+
+    <a-box id="btn-play"
+           width="0.28" height="0.14" depth="0.04"
+           position="0 -0.88 0.02"
+           color="#2980b9"
+           class="interactive">
+      <a-text id="txt-play"
+              value="Pinch to Play"
+              align="center"
+              position="0 0 0.025"
+              color="#ffffff"
+              width="1.6">
+      </a-text>
+    </a-box>
+
+    <a-box width="0.18" height="0.14" depth="0.04"
+           position="-0.6 -0.88 0.02"
+           color="#c0392b"
+           resize-btn="factor: 0.83"
+           class="interactive">
+      <a-text value="- Smaller"
+              align="center"
+              position="0 0 0.025"
+              color="#ffffff"
+              width="1.4">
+      </a-text>
+    </a-box>
+
+    <a-box width="0.18" height="0.14" depth="0.04"
+           position="0.6 -0.88 0.02"
+           color="#27ae60"
+           resize-btn="factor: 1.2"
+           class="interactive">
+      <a-text value="+ Bigger"
+              align="center"
+              position="0 0 0.025"
+              color="#ffffff"
+              width="1.4">
+      </a-text>
+    </a-box>
+
+  </a-entity>
+
+  <a-entity hand-tracking-controls="hand: left"
+            super-hands
+            collider-check="objects: .interactive">
+  </a-entity>
+
+  <a-entity hand-tracking-controls="hand: right"
+            super-hands
+            collider-check="objects: .interactive">
+  </a-entity>
+
+  <a-camera position="0 1.6 0"></a-camera>
+
+</a-scene>
+
+<script>
+const video   = document.getElementById('vid');
+const btnPlay = document.getElementById('btn-play');
+const txtPlay = document.getElementById('txt-play');
+
+btnPlay.addEventListener('pinchstarted', () => {
+  if (video.paused) {
+    video.play();
+    txtPlay.setAttribute('value', 'Pinch to Pause');
+  } else {
+    video.pause();
+    txtPlay.setAttribute('value', 'Pinch to Play');
+  }
+});
+</script>
+
+</body>
+</html>

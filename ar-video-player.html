@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Video Player</title>
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script>
+
+    /* ================================================================
+       COMPONENT: draggable
+       Hold trigger on the video screen to drag the whole player group.
+       ================================================================ */
+    AFRAME.registerComponent('draggable', {
+      init() {
+        this.dragging = false;
+        this.distance = 2;
+        this.cursorEl = null;
+        this.el.addEventListener('mousedown', this.onDown.bind(this));
+        this.el.addEventListener('mouseup',   this.onUp.bind(this));
+      },
+      onDown(e) {
+        this.dragging = true;
+        this.cursorEl = e.detail.cursorEl;
+        // Measure distance from camera to the parent group so it
+        // stays at the same depth while you drag
+        const cam = new THREE.Vector3();
+        const obj = new THREE.Vector3();
+        this.el.sceneEl.camera.el.object3D.getWorldPosition(cam);
+        this.el.parentEl.object3D.getWorldPosition(obj);
+        this.distance = cam.distanceTo(obj);
+      },
+      onUp() {
+        this.dragging = false;
+        this.cursorEl = null;
+      },
+      tick() {
+        if (!this.dragging || !this.cursorEl) return;
+        const rc  = this.cursorEl.components.raycaster;
+        if (!rc)  return;
+        const ray = rc.raycaster.ray;
+        const pos = new THREE.Vector3()
+          .copy(ray.origin)
+          .addScaledVector(ray.direction, this.distance);
+        // Move the whole group, not just the screen plane
+        this.el.parentEl.object3D.position.copy(pos);
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: face-camera (billboard)
+       Makes the video group always rotate to face the user,
+       horizontally only. Also preserves any manual Z spin so
+       lookAt() doesn't wipe it out every frame.
+       ================================================================ */
+    AFRAME.registerComponent('face-camera', {
+      init() {
+        this.zRot = 0; // tracks manual spin in radians
+      },
+      tick() {
+        const cam    = this.el.sceneEl.camera;
+        const camPos = new THREE.Vector3();
+        cam.getWorldPosition(camPos);
+        const objPos = new THREE.Vector3();
+        this.el.object3D.getWorldPosition(objPos);
+        camPos.y = objPos.y; // lock Y — don't tilt up/down
+        this.el.object3D.lookAt(camPos);
+        // Re-apply spin after lookAt resets all rotation axes
+        this.el.object3D.rotation.z = this.zRot;
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: spin-btn
+       Rotates the video group around its Z axis (clockwise or
+       counterclockwise) by 15° per click, independently of face-camera.
+       ================================================================ */
+    AFRAME.registerComponent('spin-btn', {
+      schema: { direction: { default: 1 } }, // 1 = CW, -1 = CCW
+      init() {
+        this.el.addEventListener('click', () => {
+          const group   = document.querySelector('#video-group');
+          const faceCam = group.components['face-camera'];
+          faceCam.zRot += THREE.MathUtils.degToRad(15 * this.data.direction);
+        });
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: resize-btn
+       Scales the #video-group entity up or down by a multiplier.
+       ================================================================ */
+    AFRAME.registerComponent('resize-btn', {
+      schema: { factor: { default: 1.2 } },
+      init() {
+        this.el.addEventListener('click', () => {
+          document.querySelector('#video-group').object3D.scale
+            .multiplyScalar(this.data.factor);
+        });
+      }
+    });
+
+  </script>
+</head>
+<body>
+
+  <a-scene
+    webxr="requiredFeatures: local-floor; optionalFeatures: bounded-floor,hand-tracking,hit-test"
+    xr-mode-ui="XRMode: ar"
+    background="color: transparent"
+    renderer="alpha: true; colorManagement: true; antialias: true">
+
+    <!-- ============================================================
+         ASSETS — change "video.mp4" to your actual video file name
+         ============================================================ -->
+    <a-assets>
+      <video id="vid"
+             src="video.mp4"
+             loop playsinline webkit-playsinline
+             crossorigin="anonymous">
+      </video>
+    </a-assets>
+
+    <!-- ============================================================
+         VIDEO GROUP
+         Everything inside here moves/scales together.
+         Starting position: 2.5 m in front, at eye height (1.6 m).
+         ============================================================ -->
+    <a-entity id="video-group" position="0 1.6 -2.5" face-camera>
+
+      <!-- ↺ Spin counterclockwise — top LEFT corner -->
+      <a-box width="0.18" height="0.14" depth="0.04"
+             position="-0.67 0.88 0.02"
+             color="#8e44ad"
+             class="clickable"
+             spin-btn="direction: -1">
+        <a-text value="&#8634;"
+                align="center" position="0 0.005 0.025"
+                color="#ffffff" width="1.0" font="dejavu">
+        </a-text>
+      </a-box>
+
+      <!-- ↻ Spin clockwise — top RIGHT corner -->
+      <a-box width="0.18" height="0.14" depth="0.04"
+             position="0.67 0.88 0.02"
+             color="#8e44ad"
+             class="clickable"
+             spin-btn="direction: 1">
+        <a-text value="&#8635;"
+                align="center" position="0 0.005 0.025"
+                color="#ffffff" width="1.0" font="dejavu">
+        </a-text>
+      </a-box>
+
+      <!-- ── VIDEO SCREEN ──────────────────────────────────────────
+           Square 1.5 m × 1.5 m.
+           Point your controller ray at it and hold the TRIGGER
+           to drag the whole player to a new position.
+           ──────────────────────────────────────────────────────── -->
+      <a-plane id="screen"
+               width="1.5" height="1.5"
+               material="src: #vid; shader: flat"
+               class="clickable"
+               draggable>
+      </a-plane>
+
+      <!-- Control bar background -->
+      <a-plane width="1.58" height="0.18"
+               position="0 -0.88 0.01"
+               color="#1a1a1a">
+      </a-plane>
+
+      <!-- − Make smaller (far LEFT) -->
+      <a-box width="0.18" height="0.14" depth="0.04"
+             position="-0.62 -0.88 0.02"
+             color="#c0392b"
+             class="clickable"
+             resize-btn="factor: 0.83">
+        <a-text value="&#8722; Smaller"
+                align="center" position="0 0.005 0.025"
+                color="#ffffff" width="1.4" font="dejavu">
+        </a-text>
+      </a-box>
+
+      <!-- ▶ / ⏸  Play / Pause button (CENTER) -->
+      <a-box id="btn-play"
+             width="0.28" height="0.14" depth="0.04"
+             position="0 -0.88 0.02"
+             color="#2980b9"
+             class="clickable">
+        <a-text id="txt-play"
+                value="&#9654; Play"
+                align="center" position="0 0 0.025"
+                color="#ffffff" width="1.6" font="dejavu">
+        </a-text>
+      </a-box>
+
+      <!-- + Make bigger (far RIGHT) -->
+      <a-box width="0.18" height="0.14" depth="0.04"
+             position="0.62 -0.88 0.02"
+             color="#27ae60"
+             class="clickable"
+             resize-btn="factor: 1.2">
+        <a-text value="+ Bigger"
+                align="center" position="0 0.005 0.025"
+                color="#ffffff" width="1.4" font="dejavu">
+        </a-text>
+      </a-box>
+
+      <!-- Hint label — moved above the control bar -->
+      <a-text value="Pinch and hold screen to move"
+              align="center" position="0 -0.72 0.02"
+              color="#666666" width="3.0" font="dejavu">
+      </a-text>
+
+    </a-entity>
+    <!-- end #video-group -->
+
+
+    <!-- ============================================================
+         HAND GESTURE CONTROLS
+         Pinch index + thumb to click. Pinch and hold on the
+         screen to drag the player to a new position.
+         modelStyle: dots shows fingertip dots instead of full hand mesh.
+         ============================================================ -->
+    <a-entity
+      hand-tracking-controls="hand: right; modelStyle: dots"
+      raycaster="objects: .clickable; far: 50; showLine: true; lineColor: white; lineOpacity: 0.8"
+      cursor="fuse: false; downEvents: pinchstarted; upEvents: pinchended">
+    </a-entity>
+
+    <a-entity
+      hand-tracking-controls="hand: left; modelStyle: dots"
+      raycaster="objects: .clickable; far: 50; showLine: true; lineColor: white; lineOpacity: 0.8"
+      cursor="fuse: false; downEvents: pinchstarted; upEvents: pinchended">
+    </a-entity>
+
+    <!-- ============================================================
+         CAMERA + GAZE CURSOR (fallback)
+         Since the player always faces you, gaze targeting is now
+         reliable no matter where the player is in the room.
+         Stare at a button for 1.2 s to activate it.
+         ============================================================ -->
+    <a-camera position="0 1.6 0">
+      <a-cursor fuse="true" fuse-timeout="1200"
+                color="#ffffff" opacity="0.8"
+                raycaster="objects: .clickable; far: 50">
+      </a-cursor>
+    </a-camera>
+
+  </a-scene>
+
+
+  <script>
+    const video   = document.getElementById('vid');
+    const btnPlay = document.getElementById('btn-play');
+    const txtPlay = document.getElementById('txt-play');
+
+    // Try to autoplay when the scene finishes loading
+    document.querySelector('a-scene').addEventListener('loaded', () => {
+      video.play().catch(() => {
+        // Desktop browsers block autoplay without a user gesture — that's fine.
+        // The user can tap the blue Play button to start.
+        console.warn('Autoplay blocked. Tap the Play button to start the video.');
+      });
+    });
+
+    // Toggle play / pause on button click
+    btnPlay.addEventListener('click', () => {
+      if (video.paused) {
+        video.play();
+        txtPlay.setAttribute('value', '\u23F8 Pause');
+      } else {
+        video.pause();
+        txtPlay.setAttribute('value', '\u25B6 Play');
+      }
+    });
+  </script>
+
+</body>
+</html>

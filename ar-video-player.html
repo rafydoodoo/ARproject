@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Video Room</title>
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script>
+
+    /* ================================================================
+       COMPONENT: draggable
+       Pinch-hold (or gaze-hold) the screen to drag the whole
+       .video-player group to a new position.
+       ================================================================ */
+    AFRAME.registerComponent('draggable', {
+      init() {
+        this.dragging = false;
+        this.distance = 3;
+        this.cursorEl = null;
+        this.el.addEventListener('mousedown', this.onDown.bind(this));
+        this.el.addEventListener('mouseup',   this.onUp.bind(this));
+      },
+      onDown(e) {
+        this.dragging = true;
+        this.cursorEl = e.detail.cursorEl;
+        const cam = new THREE.Vector3();
+        const obj = new THREE.Vector3();
+        this.el.sceneEl.camera.el.object3D.getWorldPosition(cam);
+        this.el.parentEl.object3D.getWorldPosition(obj);
+        this.distance = cam.distanceTo(obj);
+      },
+      onUp() {
+        this.dragging = false;
+        this.cursorEl = null;
+      },
+      tick() {
+        if (!this.dragging || !this.cursorEl) return;
+        const rc  = this.cursorEl.components.raycaster;
+        if (!rc)  return;
+        const ray = rc.raycaster.ray;
+        const pos = new THREE.Vector3()
+          .copy(ray.origin)
+          .addScaledVector(ray.direction, this.distance);
+        this.el.parentEl.object3D.position.copy(pos);
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: resize-btn
+       Walks up the DOM to find the nearest .video-player ancestor
+       and scales it by the given factor.
+       ================================================================ */
+    AFRAME.registerComponent('resize-btn', {
+      schema: { factor: { default: 1.2 } },
+      init() {
+        this.el.addEventListener('click', () => {
+          let target = this.el;
+          while (target && !target.classList.contains('video-player')) {
+            target = target.parentEl;
+          }
+          if (target) target.object3D.scale.multiplyScalar(this.data.factor);
+        });
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: play-btn
+       Toggles play / pause on a specific <video> element by its ID.
+       Usage:  play-btn="video: vid1"
+       ================================================================ */
+    AFRAME.registerComponent('play-btn', {
+      schema: { video: { type: 'string', default: '' } },
+      init() {
+        this.txtEl = null;
+        this.el.addEventListener('click', () => {
+          if (!this.txtEl) this.txtEl = this.el.querySelector('a-text');
+          const video = document.getElementById(this.data.video);
+          if (!video) return;
+          if (video.paused) {
+            video.play();
+            if (this.txtEl) this.txtEl.setAttribute('value', '\u23F8 Pause');
+          } else {
+            video.pause();
+            if (this.txtEl) this.txtEl.setAttribute('value', '\u25B6 Play');
+          }
+        });
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: menu-autohide
+       Hides ALL .menu-group elements after 5 s of gaze leaving the
+       player area. Gazing at any .clickable resets the timer for all.
+       ================================================================ */
+    AFRAME.registerComponent('menu-autohide', {
+      init() {
+        this.lastGazeTime      = Date.now();
+        this.hidden            = false;
+        this.TIMEOUT           = 5000;
+        this.listenersAttached = false;
+        this.menuEls           = null;
+
+        this.onGazeEnter = () => {
+          this.lastGazeTime = Date.now();
+          if (this.hidden && this.menuEls) {
+            this.menuEls.forEach(el => el.setAttribute('visible', true));
+            this.hidden = false;
+          }
+        };
+      },
+
+      tick() {
+        // Collect all menu groups once they exist
+        if (!this.menuEls) {
+          const els = document.querySelectorAll('.menu-group');
+          if (els.length > 0) this.menuEls = Array.from(els);
+        }
+        if (!this.menuEls) return;
+
+        // Attach mouseenter to every clickable element once
+        if (!this.listenersAttached) {
+          document.querySelectorAll('.clickable').forEach(el => {
+            el.addEventListener('mouseenter', this.onGazeEnter);
+          });
+          this.listenersAttached = true;
+        }
+
+        // Hide all menus after idle timeout
+        if (!this.hidden && Date.now() - this.lastGazeTime > this.TIMEOUT) {
+          this.menuEls.forEach(el => el.setAttribute('visible', false));
+          this.hidden = true;
+        }
+      }
+    });
+
+  </script>
+</head>
+<body>
+
+  <a-scene
+    webxr="requiredFeatures: local-floor; optionalFeatures: bounded-floor,hand-tracking,hit-test"
+    xr-mode-ui="XRMode: ar"
+    background="color: transparent"
+    renderer="alpha: true; colorManagement: true; antialias: true"
+    menu-autohide>
+
+    <!-- ============================================================
+         ASSETS
+         Name your 4 video files below.
+         Use the same filename for all 4 if you want matching walls,
+         or 4 different files for different content on each wall.
+         ============================================================ -->
+    <a-assets>
+      <video id="vid1" src="video1.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+      <video id="vid2" src="video2.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+      <video id="vid3" src="video3.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+      <video id="vid4" src="video4.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+    </a-assets>
+
+
+    <!-- ============================================================
+         WALL 1 — FRONT  (you start facing this one)
+         3 m wide × 3 m tall, 3 m in front of you
+         ============================================================ -->
+    <a-entity class="video-player" position="0 1.6 -3">
+
+      <a-plane class="screen clickable"
+               width="3" height="3"
+               material="src: #vid1; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+        <a-plane width="3.1" height="0.22" position="0 -1.65 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.30" height="0.18" depth="0.04" position="-1.2 -1.65 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.34" height="0.18" depth="0.04" position="0 -1.65 0.02"
+               color="#2980b9" class="clickable" play-btn="video: vid1">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.30" height="0.18" depth="0.04" position="1.2 -1.65 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="FRONT" align="center" position="0 1.65 0.01" color="#444" width="5" font="dejavu"></a-text>
+        <a-text value="Pinch and hold screen to reposition"
+                align="center" position="0 -1.45 0.01" color="#444" width="5" font="dejavu"></a-text>
+      </a-entity>
+
+    </a-entity>
+
+
+    <!-- ============================================================
+         WALL 2 — BACK  (behind you, rotated 180°)
+         ============================================================ -->
+    <a-entity class="video-player" position="0 1.6 3" rotation="0 180 0">
+
+      <a-plane class="screen clickable"
+               width="3" height="3"
+               material="src: #vid2; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+        <a-plane width="3.1" height="0.22" position="0 -1.65 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.30" height="0.18" depth="0.04" position="-1.2 -1.65 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.34" height="0.18" depth="0.04" position="0 -1.65 0.02"
+               color="#2980b9" class="clickable" play-btn="video: vid2">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.30" height="0.18" depth="0.04" position="1.2 -1.65 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="BACK" align="center" position="0 1.65 0.01" color="#444" width="5" font="dejavu"></a-text>
+        <a-text value="Pinch and hold screen to reposition"
+                align="center" position="0 -1.45 0.01" color="#444" width="5" font="dejavu"></a-text>
+      </a-entity>
+
+    </a-entity>
+
+
+    <!-- ============================================================
+         WALL 3 — LEFT  (to your left, rotated -90°)
+         ============================================================ -->
+    <a-entity class="video-player" position="-3 1.6 0" rotation="0 -90 0">
+
+      <a-plane class="screen clickable"
+               width="3" height="3"
+               material="src: #vid3; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+        <a-plane width="3.1" height="0.22" position="0 -1.65 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.30" height="0.18" depth="0.04" position="-1.2 -1.65 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.34" height="0.18" depth="0.04" position="0 -1.65 0.02"
+               color="#2980b9" class="clickable" play-btn="video: vid3">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.30" height="0.18" depth="0.04" position="1.2 -1.65 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="LEFT" align="center" position="0 1.65 0.01" color="#444" width="5" font="dejavu"></a-text>
+        <a-text value="Pinch and hold screen to reposition"
+                align="center" position="0 -1.45 0.01" color="#444" width="5" font="dejavu"></a-text>
+      </a-entity>
+
+    </a-entity>
+
+
+    <!-- ============================================================
+         WALL 4 — RIGHT  (to your right, rotated +90°)
+         ============================================================ -->
+    <a-entity class="video-player" position="3 1.6 0" rotation="0 90 0">
+
+      <a-plane class="screen clickable"
+               width="3" height="3"
+               material="src: #vid4; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+        <a-plane width="3.1" height="0.22" position="0 -1.65 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.30" height="0.18" depth="0.04" position="-1.2 -1.65 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.34" height="0.18" depth="0.04" position="0 -1.65 0.02"
+               color="#2980b9" class="clickable" play-btn="video: vid4">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.30" height="0.18" depth="0.04" position="1.2 -1.65 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0 0.025" color="#fff" width="2.0" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="RIGHT" align="center" position="0 1.65 0.01" color="#444" width="5" font="dejavu"></a-text>
+        <a-text value="Pinch and hold screen to reposition"
+                align="center" position="0 -1.45 0.01" color="#444" width="5" font="dejavu"></a-text>
+      </a-entity>
+
+    </a-entity>
+
+
+    <!-- ============================================================
+         HAND GESTURE CONTROLS
+         Pinch to click. Pinch-hold on a screen to drag it.
+         ============================================================ -->
+    <a-entity
+      hand-tracking-controls="hand: right; modelStyle: dots"
+      raycaster="objects: .clickable; far: 50; showLine: true; lineColor: white; lineOpacity: 0.8"
+      cursor="fuse: false; downEvents: pinchstarted; upEvents: pinchended">
+    </a-entity>
+
+    <a-entity
+      hand-tracking-controls="hand: left; modelStyle: dots"
+      raycaster="objects: .clickable; far: 50; showLine: true; lineColor: white; lineOpacity: 0.8"
+      cursor="fuse: false; downEvents: pinchstarted; upEvents: pinchended">
+    </a-entity>
+
+    <!-- ============================================================
+         CAMERA + GAZE CURSOR (fallback — stare 1.2 s to activate)
+         ============================================================ -->
+    <a-camera position="0 1.6 0">
+      <a-cursor fuse="true" fuse-timeout="1200"
+                color="#ffffff" opacity="0.8"
+                raycaster="objects: .clickable; far: 50">
+      </a-cursor>
+    </a-camera>
+
+  </a-scene>
+
+
+  <script>
+    // Try to autoplay all 4 videos when scene loads
+    document.querySelector('a-scene').addEventListener('loaded', () => {
+      ['vid1', 'vid2', 'vid3', 'vid4'].forEach(id => {
+        document.getElementById(id)?.play().catch(() => {
+          console.warn(`Autoplay blocked for #${id} — use the Play button.`);
+        });
+      });
+    });
+  </script>
+
+</body>
+</html>

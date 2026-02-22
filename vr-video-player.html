@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VR Video Room</title>
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <script>
+
+    /* ================================================================
+       COMPONENT: draggable
+       Pinch-hold the screen to move the whole .video-player group.
+       ================================================================ */
+    AFRAME.registerComponent('draggable', {
+      init() {
+        this.dragging = false;
+        this.distance = 2;
+        this.cursorEl = null;
+        this.el.addEventListener('mousedown', this.onDown.bind(this));
+        this.el.addEventListener('mouseup',   this.onUp.bind(this));
+      },
+      onDown(e) {
+        this.dragging = true;
+        this.cursorEl = e.detail.cursorEl;
+        const cam = new THREE.Vector3();
+        const obj = new THREE.Vector3();
+        this.el.sceneEl.camera.el.object3D.getWorldPosition(cam);
+        this.el.parentEl.object3D.getWorldPosition(obj);
+        this.distance = cam.distanceTo(obj);
+      },
+      onUp() { this.dragging = false; this.cursorEl = null; },
+      tick() {
+        if (!this.dragging || !this.cursorEl) return;
+        const rc  = this.cursorEl.components.raycaster;
+        if (!rc)  return;
+        const ray = rc.raycaster.ray;
+        const pos = new THREE.Vector3()
+          .copy(ray.origin)
+          .addScaledVector(ray.direction, this.distance);
+        this.el.parentEl.object3D.position.copy(pos);
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: face-camera
+       Always rotates the player to face you.
+       Preserves manual X (tilt), Y (pan offset), and Z (spin) rotations
+       as additive offsets applied after each lookAt call.
+       ================================================================ */
+    AFRAME.registerComponent('face-camera', {
+      init() {
+        this.xRot = 0;   // tilt forward / backward
+        this.yRot = 0;   // pan left / right (offset on top of lookAt)
+        this.zRot = 0;   // spin / roll
+      },
+      tick() {
+        const cam    = this.el.sceneEl.camera;
+        const camPos = new THREE.Vector3();
+        cam.getWorldPosition(camPos);
+        const objPos = new THREE.Vector3();
+        this.el.object3D.getWorldPosition(objPos);
+        // flatten camera Y so lookAt stays horizontal by default
+        camPos.y = objPos.y;
+        this.el.object3D.lookAt(camPos);
+        // apply manual rotation offsets on top of lookAt result
+        this.el.object3D.rotation.x += this.xRot;
+        this.el.object3D.rotation.y += this.yRot;
+        this.el.object3D.rotation.z  = this.zRot;
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: rotate-btn
+       Generic rotation button for X, Y, or Z axis.
+       Traverses up to the .video-player ancestor and nudges the
+       face-camera offset for the chosen axis by 15° per click.
+
+       Usage examples:
+         rotate-btn="axis: z; direction: -1"   ← spin CCW
+         rotate-btn="axis: x; direction:  1"   ← tilt top back
+         rotate-btn="axis: y; direction:  1"   ← pan right
+       ================================================================ */
+    AFRAME.registerComponent('rotate-btn', {
+      schema: {
+        axis:      { default: 'z' },   // 'x', 'y', or 'z'
+        direction: { default: 1 }
+      },
+      init() {
+        this.el.addEventListener('click', () => {
+          let t = this.el;
+          while (t && !t.classList.contains('video-player')) t = t.parentEl;
+          if (!t) return;
+          const fc = t.components['face-camera'];
+          if (!fc) return;
+          const delta = THREE.MathUtils.degToRad(15 * this.data.direction);
+          if      (this.data.axis === 'x') fc.xRot += delta;
+          else if (this.data.axis === 'y') fc.yRot += delta;
+          else                             fc.zRot += delta;
+        });
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: resize-btn
+       Traverses up to the .video-player ancestor and scales it.
+       ================================================================ */
+    AFRAME.registerComponent('resize-btn', {
+      schema: { factor: { default: 1.2 } },
+      init() {
+        this.el.addEventListener('click', () => {
+          let t = this.el;
+          while (t && !t.classList.contains('video-player')) t = t.parentEl;
+          if (t) t.object3D.scale.multiplyScalar(this.data.factor);
+        });
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: play-btn
+       Toggles play/pause for a specific video by ID.
+       Usage:  play-btn="video: vid1"
+       ================================================================ */
+    AFRAME.registerComponent('play-btn', {
+      schema: { video: { type: 'string', default: '' } },
+      init() {
+        this.txtEl = null;
+        this.el.addEventListener('click', () => {
+          if (!this.txtEl) this.txtEl = this.el.querySelector('a-text');
+          const vid = document.getElementById(this.data.video);
+          if (!vid) return;
+          if (vid.paused) {
+            vid.play();
+            if (this.txtEl) this.txtEl.setAttribute('value', '\u23F8 Pause');
+          } else {
+            vid.pause();
+            if (this.txtEl) this.txtEl.setAttribute('value', '\u25B6 Play');
+          }
+        });
+      }
+    });
+
+    /* ================================================================
+       COMPONENT: menu-autohide
+       Hides all .menu-group elements 5 s after gaze leaves any player.
+       Gazing at any .clickable instantly brings all menus back.
+       ================================================================ */
+    AFRAME.registerComponent('menu-autohide', {
+      init() {
+        this.lastGazeTime      = Date.now();
+        this.hidden            = false;
+        this.TIMEOUT           = 5000;
+        this.listenersAttached = false;
+        this.menuEls           = null;
+        this.onGazeEnter = () => {
+          this.lastGazeTime = Date.now();
+          if (this.hidden && this.menuEls) {
+            this.menuEls.forEach(el => el.setAttribute('visible', true));
+            this.hidden = false;
+          }
+        };
+      },
+      tick() {
+        if (!this.menuEls) {
+          const els = document.querySelectorAll('.menu-group');
+          if (els.length > 0) this.menuEls = Array.from(els);
+        }
+        if (!this.menuEls) return;
+        if (!this.listenersAttached) {
+          document.querySelectorAll('.clickable').forEach(el => {
+            el.addEventListener('mouseenter', this.onGazeEnter);
+          });
+          this.listenersAttached = true;
+        }
+        if (!this.hidden && Date.now() - this.lastGazeTime > this.TIMEOUT) {
+          this.menuEls.forEach(el => el.setAttribute('visible', false));
+          this.hidden = true;
+        }
+      }
+    });
+
+  </script>
+</head>
+<body>
+
+  <a-scene
+    webxr="requiredFeatures: local-floor; optionalFeatures: bounded-floor,hand-tracking"
+    xr-mode-ui="XRMode: vr"
+    background="color: #0d0d1a"
+    renderer="alpha: false; colorManagement: true; antialias: true"
+    menu-autohide>
+
+    <!-- ============================================================
+         ASSETS — point each src to your video files
+         ============================================================ -->
+    <a-assets>
+      <video id="vid1" src="video1.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+      <video id="vid2" src="video2.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+      <video id="vid3" src="video3.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+      <video id="vid4" src="video4.mp4" loop playsinline webkit-playsinline crossorigin="anonymous"></video>
+    </a-assets>
+
+    <!-- Solid VR sky — change the color to whatever suits your 3D models best -->
+    <a-sky color="#0d0d1a"></a-sky>
+
+
+    <!-- ============================================================
+         ALL 4 PLAYERS START STACKED IN FRONT OF YOU
+         Each is 0.06 m closer than the next so you can grab them
+         one by one and drag each to its wall position.
+
+         ROTATION CONTROLS (6 buttons, 2 rows above each label):
+           Row 1  ↺Z  ▲X  ↻Z     ← spin left | tilt up   | spin right
+           Row 2  ◄Y  ▼X  ►Y     ← pan left  | tilt down | pan right
+
+           Z = spin / roll the screen
+           X = tilt top toward / away from you
+           Y = pan left edge / right edge toward you
+         ============================================================ -->
+
+
+    <!-- ── PLAYER 1 — blue label ─────────────────────────────────── -->
+    <a-entity class="video-player" position="0 1.6 -2.50" face-camera>
+
+      <a-plane class="screen clickable"
+               width="1.5" height="1.5"
+               material="src: #vid1; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+
+        <!-- Colour-coded top label -->
+        <a-plane width="1.5" height="0.12" position="0 0.81 0.01" color="#2980b9"></a-plane>
+        <a-text value="VIDEO 1" align="center" position="0 0.81 0.02"
+                color="#fff" width="4" font="dejavu"></a-text>
+
+        <!-- ── Rotation Row 1 (y=1.09): ↺Z  ▲X  ↻Z ── -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: -1">
+          <a-text value="&#8634; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 1.09 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: 1">
+          <a-text value="&#8593; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: 1">
+          <a-text value="&#8635; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <!-- ── Rotation Row 2 (y=0.95): ◄Y  ▼X  ►Y ── -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: -1">
+          <a-text value="&#8592; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 0.95 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: -1">
+          <a-text value="&#8595; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: 1">
+          <a-text value="&#8594; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <!-- Control bar -->
+        <a-plane width="1.58" height="0.18" position="0 -0.88 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.18" height="0.14" depth="0.04" position="-0.62 -0.88 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.28" height="0.14" depth="0.04" position="0 -0.88 0.02"
+               color="#2980b9" class="clickable" play-btn="video: vid1">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="1.6" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.18" height="0.14" depth="0.04" position="0.62 -0.88 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="Pinch and hold screen to move"
+                align="center" position="0 -0.72 0.02" color="#666" width="3.0" font="dejavu"></a-text>
+
+      </a-entity>
+    </a-entity>
+
+
+    <!-- ── PLAYER 2 — green label ─────────────────────────────────── -->
+    <a-entity class="video-player" position="0 1.6 -2.56" face-camera>
+
+      <a-plane class="screen clickable"
+               width="1.5" height="1.5"
+               material="src: #vid2; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+
+        <a-plane width="1.5" height="0.12" position="0 0.81 0.01" color="#27ae60"></a-plane>
+        <a-text value="VIDEO 2" align="center" position="0 0.81 0.02"
+                color="#fff" width="4" font="dejavu"></a-text>
+
+        <!-- Rotation Row 1 -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: -1">
+          <a-text value="&#8634; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 1.09 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: 1">
+          <a-text value="&#8593; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: 1">
+          <a-text value="&#8635; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <!-- Rotation Row 2 -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: -1">
+          <a-text value="&#8592; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 0.95 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: -1">
+          <a-text value="&#8595; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: 1">
+          <a-text value="&#8594; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <a-plane width="1.58" height="0.18" position="0 -0.88 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.18" height="0.14" depth="0.04" position="-0.62 -0.88 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.28" height="0.14" depth="0.04" position="0 -0.88 0.02"
+               color="#27ae60" class="clickable" play-btn="video: vid2">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="1.6" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.18" height="0.14" depth="0.04" position="0.62 -0.88 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="Pinch and hold screen to move"
+                align="center" position="0 -0.72 0.02" color="#666" width="3.0" font="dejavu"></a-text>
+
+      </a-entity>
+    </a-entity>
+
+
+    <!-- ── PLAYER 3 — orange label ───────────────────────────────── -->
+    <a-entity class="video-player" position="0 1.6 -2.62" face-camera>
+
+      <a-plane class="screen clickable"
+               width="1.5" height="1.5"
+               material="src: #vid3; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+
+        <a-plane width="1.5" height="0.12" position="0 0.81 0.01" color="#e67e22"></a-plane>
+        <a-text value="VIDEO 3" align="center" position="0 0.81 0.02"
+                color="#fff" width="4" font="dejavu"></a-text>
+
+        <!-- Rotation Row 1 -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: -1">
+          <a-text value="&#8634; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 1.09 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: 1">
+          <a-text value="&#8593; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: 1">
+          <a-text value="&#8635; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <!-- Rotation Row 2 -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: -1">
+          <a-text value="&#8592; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 0.95 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: -1">
+          <a-text value="&#8595; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: 1">
+          <a-text value="&#8594; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <a-plane width="1.58" height="0.18" position="0 -0.88 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.18" height="0.14" depth="0.04" position="-0.62 -0.88 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.28" height="0.14" depth="0.04" position="0 -0.88 0.02"
+               color="#e67e22" class="clickable" play-btn="video: vid3">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="1.6" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.18" height="0.14" depth="0.04" position="0.62 -0.88 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="Pinch and hold screen to move"
+                align="center" position="0 -0.72 0.02" color="#666" width="3.0" font="dejavu"></a-text>
+
+      </a-entity>
+    </a-entity>
+
+
+    <!-- ── PLAYER 4 — red label ──────────────────────────────────── -->
+    <a-entity class="video-player" position="0 1.6 -2.68" face-camera>
+
+      <a-plane class="screen clickable"
+               width="1.5" height="1.5"
+               material="src: #vid4; shader: flat"
+               draggable>
+      </a-plane>
+
+      <a-entity class="menu-group">
+
+        <a-plane width="1.5" height="0.12" position="0 0.81 0.01" color="#c0392b"></a-plane>
+        <a-text value="VIDEO 4" align="center" position="0 0.81 0.02"
+                color="#fff" width="4" font="dejavu"></a-text>
+
+        <!-- Rotation Row 1 -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: -1">
+          <a-text value="&#8634; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 1.09 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: 1">
+          <a-text value="&#8593; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 1.09 0.02"
+               color="#8e44ad" class="clickable" rotate-btn="axis: z; direction: 1">
+          <a-text value="&#8635; Z" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <!-- Rotation Row 2 -->
+        <a-box width="0.22" height="0.12" depth="0.04" position="-0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: -1">
+          <a-text value="&#8592; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0 0.95 0.02"
+               color="#16a085" class="clickable" rotate-btn="axis: x; direction: -1">
+          <a-text value="&#8595; X" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.22" height="0.12" depth="0.04" position="0.50 0.95 0.02"
+               color="#d35400" class="clickable" rotate-btn="axis: y; direction: 1">
+          <a-text value="&#8594; Y" align="center" position="0 0 0.025" color="#fff" width="1.1" font="dejavu"></a-text>
+        </a-box>
+
+        <a-plane width="1.58" height="0.18" position="0 -0.88 0.01" color="#1a1a1a"></a-plane>
+        <a-box width="0.18" height="0.14" depth="0.04" position="-0.62 -0.88 0.02"
+               color="#c0392b" class="clickable" resize-btn="factor: 0.83">
+          <a-text value="&#8722; Smaller" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.28" height="0.14" depth="0.04" position="0 -0.88 0.02"
+               color="#c0392b" class="clickable" play-btn="video: vid4">
+          <a-text value="&#9654; Play" align="center" position="0 0 0.025" color="#fff" width="1.6" font="dejavu"></a-text>
+        </a-box>
+        <a-box width="0.18" height="0.14" depth="0.04" position="0.62 -0.88 0.02"
+               color="#27ae60" class="clickable" resize-btn="factor: 1.2">
+          <a-text value="+ Bigger" align="center" position="0 0.005 0.025" color="#fff" width="1.4" font="dejavu"></a-text>
+        </a-box>
+        <a-text value="Pinch and hold screen to move"
+                align="center" position="0 -0.72 0.02" color="#666" width="3.0" font="dejavu"></a-text>
+
+      </a-entity>
+    </a-entity>
+
+
+    <!-- ============================================================
+         HAND GESTURE CONTROLS
+         ============================================================ -->
+    <a-entity
+      hand-tracking-controls="hand: right; modelStyle: dots"
+      raycaster="objects: .clickable; far: 50; showLine: true; lineColor: white; lineOpacity: 0.8"
+      cursor="fuse: false; downEvents: pinchstarted; upEvents: pinchended">
+    </a-entity>
+
+    <a-entity
+      hand-tracking-controls="hand: left; modelStyle: dots"
+      raycaster="objects: .clickable; far: 50; showLine: true; lineColor: white; lineOpacity: 0.8"
+      cursor="fuse: false; downEvents: pinchstarted; upEvents: pinchended">
+    </a-entity>
+
+    <!-- ============================================================
+         CAMERA + GAZE CURSOR
+         ============================================================ -->
+    <a-camera position="0 1.6 0">
+      <a-cursor fuse="true" fuse-timeout="1200" color="#fff" opacity="0.8"
+                raycaster="objects: .clickable; far: 50">
+      </a-cursor>
+    </a-camera>
+
+  </a-scene>
+
+
+  <script>
+    // Autoplay all 4 on scene load
+    document.querySelector('a-scene').addEventListener('loaded', () => {
+      ['vid1', 'vid2', 'vid3', 'vid4'].forEach(id => {
+        document.getElementById(id)?.play()
+          .catch(() => console.warn(`Autoplay blocked for #${id} — tap Play.`));
+      });
+    });
+  </script>
+
+</body>
+</html>
